@@ -19,8 +19,8 @@ Usage:
                            [--cache-dir DIR] [--refresh]
 
 Examples:
-    python3 rss_to_html.py podbook.rss
-    python3 rss_to_html.py podbook.rss my_site --page-size 24
+    python3 rss_to_html.py bookpod.rss
+    python3 rss_to_html.py bookpod.rss my_site --page-size 24
     python3 rss_to_html.py https://example.com/feed.rss --no-download
     python3 rss_to_html.py https://example.com/feed.rss --refresh
 """

@@ -45,7 +45,7 @@ def read_default_feed_source() -> str:
                 line = line.strip()
                 if line and not line.startswith("#"):
                     return line
-    return os.path.join(BASE_DIR, "podbook_reduced.rss")
+    return os.path.join(BASE_DIR, "bookpod_reduced.rss")
 
 
 CACHE_DIR = os.environ.get("CACHE_DIR") or default_cache_dir()
