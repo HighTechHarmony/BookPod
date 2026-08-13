@@ -1,0 +1,9 @@
+# Copy this file to feed_url.txt (which is git-ignored) and put your default
+# feed source here. Read by main.py when the FEED_SOURCE env var is not set.
+#
+# Examples:
+#   https://example.com/private/feed.rss
+#   /absolute/path/to/local/feed.rss
+#
+# The first non-comment, non-blank line is used.
+https://audiobooks.com/podcast.rss

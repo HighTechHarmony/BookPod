@@ -1,0 +1,46 @@
+<p class="meta">{{ count }} audiobooks &middot; page {{ page }} of {{ page_count }}</p>
+{% if error %}
+<div class="notice">Error: {{ error }}</div>
+{% endif %}
+
+<div class="grid">
+  {% for book in page_books %}
+  <button class="card"
+          hx-get="/book/{{ book.index }}?page={{ page }}"
+          hx-target="#detail"
+          hx-swap="innerHTML">
+    {% if book.cover %}
+    <img class="thumb" loading="lazy" src="{{ book.cover }}" alt="{{ book.title }} cover">
+    {% else %}
+    <span class="placeholder"></span>
+    {% endif %}
+    <span class="title">{{ book.title }}</span>
+    <span class="author">{{ book.author }}</span>
+  </button>
+  {% endfor %}
+</div>
+
+<nav class="pagination">
+  {% if page > 1 %}
+  <button hx-get="/grid?page={{ page - 1 }}" hx-target="#grid" hx-swap="innerHTML">&lsaquo; Prev</button>
+  {% else %}
+  <button disabled>&lsaquo; Prev</button>
+  {% endif %}
+
+  {% for p in page_items %}
+    {% if p == '…' %}
+    <span class="dots">&hellip;</span>
+    {% else %}
+    <button class="{% if p == page %}active{% endif %}"
+            hx-get="/grid?page={{ p }}"
+            hx-target="#grid"
+            hx-swap="innerHTML">{{ p }}</button>
+    {% endif %}
+  {% endfor %}
+
+  {% if page < page_count %}
+  <button hx-get="/grid?page={{ page + 1 }}" hx-target="#grid" hx-swap="innerHTML">Next &rsaquo;</button>
+  {% else %}
+  <button disabled>Next &rsaquo;</button>
+  {% endif %}
+</nav>

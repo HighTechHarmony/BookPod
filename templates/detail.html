@@ -1,0 +1,27 @@
+<div class="drawer-card">
+  <button class="drawer-close" aria-label="Close" onclick="closeDrawer()">&times;</button>
+
+  {% if book.cover %}
+  <img class="detail-cover" src="{{ book.cover }}" alt="{{ book.title }} cover">
+  {% endif %}
+
+  <div class="drawer-body">
+    <h2>{{ book.title }}</h2>
+    <p class="author">{{ book.author }}</p>
+
+    {% if book.description %}
+    <p class="desc">{{ book.description }}</p>
+    {% endif %}
+
+    {% if book.pubDate %}
+    <p class="pubdate">{{ book.pubDate }}</p>
+    {% endif %}
+
+    {% if book.audio %}
+    <audio controls preload="none" src="{{ book.audio }}"></audio>
+    <a class="dl" href="{{ book.audio }}" download>Download audio</a>
+    {% else %}
+    <p class="pubdate">No audio enclosure available.</p>
+    {% endif %}
+  </div>
+</div>
