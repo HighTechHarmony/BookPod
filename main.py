@@ -194,18 +194,44 @@ def pagination_items(page: int, total: int) -> list:
     return out
 
 
-def grid_context(lib: "Library", page: int, rss_url: str = "", oob: bool = False) -> dict:
-    total = page_count(lib)
+def filter_books(lib: "Library", search: str | None) -> tuple[str, list[tuple[int, dict]]]:
+    """Case-insensitive substring filter on title or author.
+
+    Returns (normalized query, [(1-based original index, book), ...]) so the
+    original index (used for /book/{id} and cover paths) is preserved.
+    """
+    q = (search or "").strip()
+    entries = list(enumerate(lib.books, start=1))
+    if q:
+        ql = q.lower()
+        entries = [
+            (i, b) for i, b in entries
+            if ql in b.get("title", "").lower() or ql in b.get("author", "").lower()
+        ]
+    return q, entries
+
+
+def paginate(entries: list[tuple[int, dict]], page: int) -> tuple[int, int, list[tuple[int, dict]]]:
+    """Clamp the page number and slice entries into (page, page_count, slice)."""
+    total = max(1, math.ceil(len(entries) / PAGE_SIZE))
     page = max(1, min(page, total))
     start = (page - 1) * PAGE_SIZE
-    slice_ = lib.books[start:start + PAGE_SIZE]
-    page_books = [dict(book, index=i) for i, book in enumerate(slice_, start=start + 1)]
+    return page, total, entries[start:start + PAGE_SIZE]
+
+
+def grid_context(lib: "Library", page: int, rss_url: str = "", oob: bool = False,
+                 search: str | None = None) -> dict:
+    search, entries = filter_books(lib, search)
+    page, total, page_slice = paginate(entries, page)
+    page_books = [dict(book, index=i) for i, book in page_slice]
     return {
         "page": page,
         "page_count": total,
         "page_items": pagination_items(page, total),
         "page_books": page_books,
         "count": len(lib.books),
+        "result_count": len(entries),
+        "search": search,
         "error": lib.error,
         "channel_title": lib.channel_title,
         "channel_image": lib.channel_image or "",
@@ -242,6 +268,8 @@ def home_context(rss_url: str | None) -> dict:
             "page_items": [],
             "page_books": [],
             "count": 0,
+            "result_count": 0,
+            "search": "",
             "channel_title": "Audiobook Feed Library",
             "channel_image": "",
             "oob": False,
@@ -286,13 +314,22 @@ async def home(request: Request, rss_url: str | None = None):
 
 
 @app.get("/grid", response_class=HTMLResponse)
-async def grid(request: Request, page: int = 1, rss_url: str | None = None):
+async def grid(request: Request, page: int = 1, rss_url: str | None = None,
+               search: str | None = None):
     source = resolve_source(rss_url)
     if source is None:
         return templates.TemplateResponse(request, "empty.html", {"rss_url": ""})
     lib = get_library(source)
-    page = await prepare_page(lib, page)
-    return templates.TemplateResponse(request, "grid.html", grid_context(lib, page, rss_url=source, oob=True))
+    await run_in_threadpool(lib.load_sync)
+    _search, entries = filter_books(lib, search)
+    page, _total, page_slice = paginate(entries, page)
+    indices = [i for i, _ in page_slice]
+    if indices:
+        await run_in_threadpool(lib.ensure_covers, indices)
+    return templates.TemplateResponse(
+        request, "grid.html",
+        grid_context(lib, page, rss_url=source, oob=True, search=search),
+    )
 
 
 @app.get("/book/{item_id}", response_class=HTMLResponse)

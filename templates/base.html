@@ -43,6 +43,18 @@
       flex-shrink: 0;
       background: #232838;
     }
+    .search-input {
+      padding: 8px 11px;
+      border: 1px solid #333a4d;
+      border-radius: 7px;
+      background: #12141c;
+      color: var(--text);
+      font: inherit;
+      font-size: 0.85rem;
+      width: min(260px, 38vw);
+    }
+    .search-input:focus { outline: none; border-color: var(--accent); }
+    .search-input::placeholder { color: var(--muted); }
     .refresh {
       padding: 8px 14px;
       border: 1px solid #333a4d;
@@ -122,7 +134,19 @@
       -webkit-box-orient: vertical;
       overflow: hidden;
     }
-    .card .author { margin-top: 2px; font-size: 0.78rem; color: var(--muted); }
+    .card .author-btn {
+      margin-top: 2px;
+      align-self: flex-start;
+      font-family: inherit;
+      font-size: 0.78rem;
+      color: var(--muted);
+      background: none;
+      border: 0;
+      padding: 0;
+      text-align: left;
+      cursor: pointer;
+    }
+    .card .author-btn:hover { color: var(--accent); text-decoration: underline; }
     .placeholder {
       display: block;
       width: 100%;
@@ -302,6 +326,13 @@
          src="{% if channel_image %}{{ channel_image }}{% else %}data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw=={% endif %}"
          alt="" {% if not channel_image %}hidden{% endif %}>
     <h1 id="channel-title">{{ channel_title }}</h1>
+    {% if rss_url %}
+    <input id="search-input" class="search-input" type="search" name="search"
+           value="{{ search }}" placeholder="Search title or author…"
+           hx-get="/grid?rss_url={{ rss_url|urlencode }}"
+           hx-trigger="keyup changed delay:300ms, search"
+           hx-target="#grid" hx-swap="innerHTML">
+    {% endif %}
   </header>
 
   <main>
@@ -358,6 +389,12 @@
     function closeMenu() {
       document.getElementById('menu').classList.remove('open');
       document.getElementById('menu-backdrop').classList.remove('show');
+    }
+    function authorClick(evt, btn) {
+      // Don't also open the book detail drawer when clicking an author name.
+      evt.stopPropagation();
+      var input = document.getElementById('search-input');
+      if (input) input.value = btn.getAttribute('data-author');
     }
     // Whenever a card's detail fragment is swapped into #detail, slide the
     // drawer open. Closing only hides it (content stays in the DOM), so any

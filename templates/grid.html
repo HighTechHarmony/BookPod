@@ -7,31 +7,43 @@
      src="{% if channel_image %}{{ channel_image }}{% else %}data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw=={% endif %}"
      alt="" {% if not channel_image %}hidden{% endif %}>
 {% endif %}
-<p class="meta">{{ count }} audiobooks &middot; page {{ page }} of {{ page_count }}</p>
+
+<p class="meta">
+  {% if search %}{{ result_count }} result{% if result_count != 1 %}s{% endif %} for &ldquo;{{ search }}&rdquo;{% else %}{{ count }} audiobooks{% endif %}
+  &middot; page {{ page }} of {{ page_count }}
+</p>
+
 {% if error %}
 <div class="notice">Error: {{ error }}</div>
 {% endif %}
 
+{% if search and result_count == 0 %}
+<div class="notice">No books match &ldquo;{{ search }}&rdquo;.</div>
+{% endif %}
+
 <div class="grid">
   {% for book in page_books %}
-  <button class="card"
-          hx-get="/book/{{ book.index }}?page={{ page }}&rss_url={{ rss_url|urlencode }}"
-          hx-target="#detail"
-          hx-swap="innerHTML">
+  <div class="card"
+       hx-get="/book/{{ book.index }}?page={{ page }}&rss_url={{ rss_url|urlencode }}"
+       hx-target="#detail"
+       hx-swap="innerHTML">
     {% if book.cover %}
     <img class="thumb" loading="lazy" src="{{ book.cover }}" alt="{{ book.title }} cover">
     {% else %}
     <span class="placeholder"></span>
     {% endif %}
     <span class="title">{{ book.title }}</span>
-    <span class="author">{{ book.author }}</span>
-  </button>
+    <button class="author-btn" data-author="{{ book.author }}"
+            hx-get="/grid?rss_url={{ rss_url|urlencode }}&search={{ book.author|urlencode }}"
+            hx-target="#grid" hx-swap="innerHTML"
+            onclick="authorClick(event, this)">{{ book.author }}</button>
+  </div>
   {% endfor %}
 </div>
 
 <nav class="pagination">
   {% if page > 1 %}
-  <button hx-get="/grid?page={{ page - 1 }}&rss_url={{ rss_url|urlencode }}" hx-target="#grid" hx-swap="innerHTML">&lsaquo; Prev</button>
+  <button hx-get="/grid?page={{ page - 1 }}&rss_url={{ rss_url|urlencode }}&search={{ search|urlencode }}" hx-target="#grid" hx-swap="innerHTML">&lsaquo; Prev</button>
   {% else %}
   <button disabled>&lsaquo; Prev</button>
   {% endif %}
@@ -41,14 +53,14 @@
     <span class="dots">&hellip;</span>
     {% else %}
     <button class="{% if p == page %}active{% endif %}"
-            hx-get="/grid?page={{ p }}&rss_url={{ rss_url|urlencode }}"
+            hx-get="/grid?page={{ p }}&rss_url={{ rss_url|urlencode }}&search={{ search|urlencode }}"
             hx-target="#grid"
             hx-swap="innerHTML">{{ p }}</button>
     {% endif %}
   {% endfor %}
 
   {% if page < page_count %}
-  <button hx-get="/grid?page={{ page + 1 }}&rss_url={{ rss_url|urlencode }}" hx-target="#grid" hx-swap="innerHTML">Next &rsaquo;</button>
+  <button hx-get="/grid?page={{ page + 1 }}&rss_url={{ rss_url|urlencode }}&search={{ search|urlencode }}" hx-target="#grid" hx-swap="innerHTML">Next &rsaquo;</button>
   {% else %}
   <button disabled>Next &rsaquo;</button>
   {% endif %}
