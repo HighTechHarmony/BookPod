@@ -14,6 +14,10 @@ no frontend build tools.
 - Feeds and cover images are **cached on disk**, so repeat loads are fast and
   offline-friendly. Covers are fetched lazily — only for the page you view.
 
+## Screenshot
+
+![BookPod cover grid](screenshot.png)
+
 ## Project layout
 
 ```
