@@ -84,7 +84,8 @@ class Library:
             try:
                 data, _source, _origin = load_input(self.source, self.cache)
                 channel_title, _img, books = parse_feed(data)
-                self._download_covers(books, force=refresh)
+                # Covers are downloaded lazily per page (see ensure_covers),
+                # so loading the feed never fetches the whole cover set.
                 self.channel_title = channel_title
                 self.books = books
                 self.error = None
@@ -105,25 +106,35 @@ class Library:
         with self._lock:
             self._load(refresh=True)
 
-    def _download_covers(self, books: list[dict], force: bool = False) -> None:
+    def ensure_covers(self, indices: list[int]) -> None:
+        """Download covers for the given 1-based book indices (lazy).
+
+        Only the requested indices are touched. Each cover is pulled from the
+        disk cache when possible (validated by feed + image URL) and written to
+        COVERS_DIR; books whose cover is already local, or absent from the
+        feed, are skipped. Running this in a threadpool keeps blocking I/O off
+        the event loop.
+        """
+        if not indices:
+            return
         os.makedirs(COVERS_DIR, exist_ok=True)
-        for idx, book in enumerate(books, start=1):
-            url = book.get("cover", "")
-            if not url:
-                book["cover"] = ""
-                continue
-            rel = f"/covers/{idx:04d}.jpg"
-            dest = os.path.join(COVERS_DIR, f"{idx:04d}.jpg")
-            if not force and os.path.exists(dest):
+        with self._lock:
+            for idx in indices:
+                if idx < 1 or idx > len(self.books):
+                    continue
+                book = self.books[idx - 1]
+                url = book.get("cover", "")
+                if not url or url.startswith("/"):
+                    continue  # no cover in feed, or already downloaded locally
+                rel = f"/covers/{idx:04d}.jpg"
+                dest = os.path.join(COVERS_DIR, f"{idx:04d}.jpg")
+                data, _origin = cached_download(self.cache, self.feed_key, url)
+                if data is None:
+                    book["cover"] = ""  # render placeholder instead
+                    continue
+                with open(dest, "wb") as f:
+                    f.write(data)
                 book["cover"] = rel
-                continue
-            data, _origin = cached_download(self.cache, self.feed_key, url)
-            if data is None:
-                book["cover"] = ""  # render placeholder instead
-                continue
-            with open(dest, "wb") as f:
-                f.write(data)
-            book["cover"] = rel
 
 
 library = Library(FEED_SOURCE, CACHE_DIR, refresh=REFRESH_ON_START)
@@ -131,8 +142,9 @@ library = Library(FEED_SOURCE, CACHE_DIR, refresh=REFRESH_ON_START)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Kick off feed + cover loading off the event loop so the first request
-    # never blocks it; routes await load_sync() (a no-op once loaded).
+    # Kick off feed loading off the event loop so the first request never
+    # blocks it; routes await load_sync() (a no-op once loaded). Covers are
+    # downloaded lazily per page by the routes themselves.
     threading.Thread(target=library.load_sync, daemon=True).start()
     yield
 
@@ -191,19 +203,50 @@ def grid_context(page: int) -> dict:
     }
 
 
+def home_context() -> dict:
+    """Context for the initial page render.
+
+    'ready' tells base.html whether the grid can be rendered inline. When the
+    feed is still loading (not ready), base.html shows a throbber and HTMX
+    fetches /grid into #grid, which awaits the load + per-page covers.
+    """
+    ctx = grid_context(1)
+    ctx["ready"] = library.loaded
+    return ctx
+
+
 # --------------------------------------------------------------------------
 # Routes
 # --------------------------------------------------------------------------
 
+async def prepare_page(page: int) -> int:
+    """Ensure the feed is loaded and covers for the requested page exist.
+
+    Runs the blocking work (feed load + per-page cover download) in a
+    threadpool so the event loop is never blocked. Returns the clamped page.
+    """
+    await run_in_threadpool(library.load_sync)
+    total = page_count()
+    page = max(1, min(page, total))
+    start = (page - 1) * PAGE_SIZE
+    end = min(start + PAGE_SIZE, len(library.books))
+    indices = list(range(start + 1, end + 1))
+    if indices:
+        await run_in_threadpool(library.ensure_covers, indices)
+    return page
+
+
 @app.get("/", response_class=HTMLResponse)
 async def home(request: Request):
-    await run_in_threadpool(library.load_sync)
-    return templates.TemplateResponse(request, "base.html", grid_context(1))
+    # Render the shell immediately: if the feed is already loaded the grid is
+    # rendered inline; otherwise base.html shows a throbber and HTMX fetches
+    # /grid (which awaits the load + per-page covers) into #grid.
+    return templates.TemplateResponse(request, "base.html", home_context())
 
 
 @app.get("/grid", response_class=HTMLResponse)
 async def grid(request: Request, page: int = 1):
-    await run_in_threadpool(library.load_sync)
+    page = await prepare_page(page)
     return templates.TemplateResponse(request, "grid.html", grid_context(page))
 
 
@@ -212,6 +255,7 @@ async def book_detail(request: Request, item_id: int, page: int = 1):
     await run_in_threadpool(library.load_sync)
     if item_id < 1 or item_id > len(library.books):
         raise HTTPException(status_code=404, detail="Book not found")
+    await run_in_threadpool(library.ensure_covers, [item_id])
     book = library.books[item_id - 1]
     return templates.TemplateResponse(request, "detail.html", {"book": book, "page": page})
 
@@ -219,4 +263,5 @@ async def book_detail(request: Request, item_id: int, page: int = 1):
 @app.post("/refresh", response_class=HTMLResponse)
 async def refresh(request: Request):
     await run_in_threadpool(library.reload_sync)
-    return templates.TemplateResponse(request, "grid.html", grid_context(1))
+    page = await prepare_page(1)
+    return templates.TemplateResponse(request, "grid.html", grid_context(page))

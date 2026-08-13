@@ -1,0 +1,9 @@
+# Private default feed URL - contains your personal feed; do not commit.
+feed_url.txt
+
+# Generated / runtime artifacts
+covers/
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/

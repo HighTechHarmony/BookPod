@@ -86,7 +86,7 @@ main { max-width: 1500px; margin: 0 auto; padding: 24px; }
   display: block;
   width: 100%;
   aspect-ratio: 1 / 1;
-  object-fit: cover;
+  object-fit: contain;
   border-radius: var(--radius);
   background: #232838;
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);

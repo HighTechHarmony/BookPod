@@ -59,6 +59,24 @@
       color: #f0b6a3;
       font-size: 0.85rem;
     }
+    .loading {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      padding: 64px 0;
+      color: var(--muted);
+      font-size: 0.95rem;
+    }
+    .spinner {
+      width: 26px;
+      height: 26px;
+      border: 3px solid #333a4d;
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
     .grid {
       display: grid;
       grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
@@ -80,7 +98,7 @@
       display: block;
       width: 100%;
       aspect-ratio: 1 / 1;
-      object-fit: cover;
+      object-fit: contain;
       border-radius: var(--radius);
       background: #232838;
       box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
@@ -165,7 +183,14 @@
       cursor: pointer;
     }
     .drawer-close:hover { color: var(--text); }
-    .detail-cover { width: 100%; aspect-ratio: 1 / 1; object-fit: cover; }
+    .detail-cover {
+      display: block;
+      width: 100%;
+      max-height: 55vh;
+      object-fit: contain;
+      object-position: center;
+      background: #14161f;
+    }
     .drawer-body { padding: 18px 22px 28px; }
     .drawer-body h2 { margin: 0 0 6px; font-size: 1.25rem; }
     .drawer-body .author { margin: 0 0 14px; color: var(--muted); }
@@ -192,7 +217,16 @@
 
   <main>
     <div id="grid">
-      {% include "grid.html" %}
+      {% if ready %}
+        {% include "grid.html" %}
+      {% elif error %}
+        <div class="notice">Error loading feed: {{ error }}</div>
+      {% else %}
+        <div class="loading" hx-get="/grid?page=1" hx-trigger="load" hx-target="#grid" hx-swap="innerHTML">
+          <span class="spinner" aria-hidden="true"></span>
+          Loading audiobooks…
+        </div>
+      {% endif %}
     </div>
   </main>
 
