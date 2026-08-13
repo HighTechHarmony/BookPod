@@ -9,10 +9,10 @@ and closing the drawer (close only hides it, never removes the content).
 
 from __future__ import annotations
 
+import hashlib
 import math
 import os
 import threading
-from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
@@ -48,7 +48,6 @@ def read_default_feed_source() -> str:
     return os.path.join(BASE_DIR, "podbook_reduced.rss")
 
 
-FEED_SOURCE = read_default_feed_source()
 CACHE_DIR = os.environ.get("CACHE_DIR") or default_cache_dir()
 REFRESH_ON_START = os.environ.get("REFRESH", "").strip().lower() in ("1", "true", "yes")
 PAGE_SIZE = int(os.environ.get("PAGE_SIZE", "20") or 20)
@@ -67,8 +66,13 @@ class Library:
         self.feed_key = (
             source if source.startswith(("http://", "https://")) else os.path.abspath(source)
         )
+        # Covers are stored per feed so different rss_url feeds never collide
+        # on index-based filenames.
+        self.covers_key = hashlib.sha1(self.feed_key.encode("utf-8")).hexdigest()
+        self.covers_dir = os.path.join(COVERS_DIR, self.covers_key)
         self.books: list[dict] = []
         self.channel_title = "Audiobooks"
+        self.channel_image: str = ""
         self.error: str | None = None
         self._loaded = False
         self._lock = threading.RLock()
@@ -83,10 +87,11 @@ class Library:
                 self.cache.refresh = True
             try:
                 data, _source, _origin = load_input(self.source, self.cache)
-                channel_title, _img, books = parse_feed(data)
+                channel_title, channel_img, books = parse_feed(data)
                 # Covers are downloaded lazily per page (see ensure_covers),
                 # so loading the feed never fetches the whole cover set.
                 self.channel_title = channel_title
+                self.channel_image = channel_img or ""
                 self.books = books
                 self.error = None
                 self._loaded = True
@@ -117,7 +122,7 @@ class Library:
         """
         if not indices:
             return
-        os.makedirs(COVERS_DIR, exist_ok=True)
+        os.makedirs(self.covers_dir, exist_ok=True)
         with self._lock:
             for idx in indices:
                 if idx < 1 or idx > len(self.books):
@@ -126,8 +131,8 @@ class Library:
                 url = book.get("cover", "")
                 if not url or url.startswith("/"):
                     continue  # no cover in feed, or already downloaded locally
-                rel = f"/covers/{idx:04d}.jpg"
-                dest = os.path.join(COVERS_DIR, f"{idx:04d}.jpg")
+                rel = f"/covers/{self.covers_key}/{idx:04d}.jpg"
+                dest = os.path.join(self.covers_dir, f"{idx:04d}.jpg")
                 data, _origin = cached_download(self.cache, self.feed_key, url)
                 if data is None:
                     book["cover"] = ""  # render placeholder instead
@@ -137,19 +142,22 @@ class Library:
                 book["cover"] = rel
 
 
-library = Library(FEED_SOURCE, CACHE_DIR, refresh=REFRESH_ON_START)
+# One Library per feed source, created lazily; the shared Cache dir keeps a
+# single on-disk cache keyed by (feed, url).
+_libraries: dict[str, "Library"] = {}
+_libraries_lock = threading.Lock()
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    # Kick off feed loading off the event loop so the first request never
-    # blocks it; routes await load_sync() (a no-op once loaded). Covers are
-    # downloaded lazily per page by the routes themselves.
-    threading.Thread(target=library.load_sync, daemon=True).start()
-    yield
+def get_library(source: str) -> "Library":
+    with _libraries_lock:
+        lib = _libraries.get(source)
+        if lib is None:
+            lib = Library(source, CACHE_DIR, refresh=REFRESH_ON_START)
+            _libraries[source] = lib
+        return lib
 
 
-app = FastAPI(title="Audiobook Feed Library", lifespan=lifespan)
+app = FastAPI(title="Audiobook Feed Library")
 app.mount("/covers", StaticFiles(directory=COVERS_DIR), name="covers")
 
 
@@ -157,8 +165,8 @@ app.mount("/covers", StaticFiles(directory=COVERS_DIR), name="covers")
 # View helpers
 # --------------------------------------------------------------------------
 
-def page_count() -> int:
-    return max(1, math.ceil(len(library.books) / PAGE_SIZE))
+def page_count(lib: "Library") -> int:
+    return max(1, math.ceil(len(lib.books) / PAGE_SIZE))
 
 
 def pagination_items(page: int, total: int) -> list:
@@ -186,32 +194,66 @@ def pagination_items(page: int, total: int) -> list:
     return out
 
 
-def grid_context(page: int) -> dict:
-    total = page_count()
+def grid_context(lib: "Library", page: int, rss_url: str = "", oob: bool = False) -> dict:
+    total = page_count(lib)
     page = max(1, min(page, total))
     start = (page - 1) * PAGE_SIZE
-    slice_ = library.books[start:start + PAGE_SIZE]
+    slice_ = lib.books[start:start + PAGE_SIZE]
     page_books = [dict(book, index=i) for i, book in enumerate(slice_, start=start + 1)]
     return {
         "page": page,
         "page_count": total,
         "page_items": pagination_items(page, total),
         "page_books": page_books,
-        "count": len(library.books),
-        "error": library.error,
-        "channel_title": library.channel_title,
+        "count": len(lib.books),
+        "error": lib.error,
+        "channel_title": lib.channel_title,
+        "channel_image": lib.channel_image or "",
+        "rss_url": rss_url,
+        "oob": oob,
     }
 
 
-def home_context() -> dict:
+def resolve_source(rss_url: str | None) -> str | None:
+    """Normalise the ?rss_url= query value; None when absent/blank."""
+    value = (rss_url or "").strip()
+    return value or None
+
+
+def home_context(rss_url: str | None) -> dict:
     """Context for the initial page render.
 
-    'ready' tells base.html whether the grid can be rendered inline. When the
-    feed is still loading (not ready), base.html shows a throbber and HTMX
-    fetches /grid into #grid, which awaits the load + per-page covers.
+    With no rss_url the app shows an empty "get started" state (menu open).
+    With a URL, 'ready' tells base.html whether to render the grid inline or
+    show a throbber that HTMX fills via /grid.
     """
-    ctx = grid_context(1)
-    ctx["ready"] = library.loaded
+    source = resolve_source(rss_url)
+    default_url = read_default_feed_source()
+    if source is None:
+        return {
+            "rss_url": "",
+            "default_url": default_url,
+            "empty": True,
+            "menu_open": True,
+            "ready": False,
+            "error": None,
+            "page": 1,
+            "page_count": 1,
+            "page_items": [],
+            "page_books": [],
+            "count": 0,
+            "channel_title": "Audiobook Feed Library",
+            "channel_image": "",
+            "oob": False,
+        }
+    lib = get_library(source)
+    ctx = grid_context(lib, 1, rss_url=source)
+    ctx.update({
+        "default_url": default_url,
+        "empty": False,
+        "menu_open": False,
+        "ready": lib.loaded,
+    })
     return ctx
 
 
@@ -219,49 +261,62 @@ def home_context() -> dict:
 # Routes
 # --------------------------------------------------------------------------
 
-async def prepare_page(page: int) -> int:
+async def prepare_page(lib: "Library", page: int) -> int:
     """Ensure the feed is loaded and covers for the requested page exist.
 
     Runs the blocking work (feed load + per-page cover download) in a
     threadpool so the event loop is never blocked. Returns the clamped page.
     """
-    await run_in_threadpool(library.load_sync)
-    total = page_count()
+    await run_in_threadpool(lib.load_sync)
+    total = page_count(lib)
     page = max(1, min(page, total))
     start = (page - 1) * PAGE_SIZE
-    end = min(start + PAGE_SIZE, len(library.books))
+    end = min(start + PAGE_SIZE, len(lib.books))
     indices = list(range(start + 1, end + 1))
     if indices:
-        await run_in_threadpool(library.ensure_covers, indices)
+        await run_in_threadpool(lib.ensure_covers, indices)
     return page
 
 
 @app.get("/", response_class=HTMLResponse)
-async def home(request: Request):
-    # Render the shell immediately: if the feed is already loaded the grid is
-    # rendered inline; otherwise base.html shows a throbber and HTMX fetches
-    # /grid (which awaits the load + per-page covers) into #grid.
-    return templates.TemplateResponse(request, "base.html", home_context())
+async def home(request: Request, rss_url: str | None = None):
+    # Render the shell immediately. Without ?rss_url= we show the empty
+    # "get started" state (menu open); with a URL, /grid fills the grid.
+    return templates.TemplateResponse(request, "base.html", home_context(rss_url))
 
 
 @app.get("/grid", response_class=HTMLResponse)
-async def grid(request: Request, page: int = 1):
-    page = await prepare_page(page)
-    return templates.TemplateResponse(request, "grid.html", grid_context(page))
+async def grid(request: Request, page: int = 1, rss_url: str | None = None):
+    source = resolve_source(rss_url)
+    if source is None:
+        return templates.TemplateResponse(request, "empty.html", {"rss_url": ""})
+    lib = get_library(source)
+    page = await prepare_page(lib, page)
+    return templates.TemplateResponse(request, "grid.html", grid_context(lib, page, rss_url=source, oob=True))
 
 
 @app.get("/book/{item_id}", response_class=HTMLResponse)
-async def book_detail(request: Request, item_id: int, page: int = 1):
-    await run_in_threadpool(library.load_sync)
-    if item_id < 1 or item_id > len(library.books):
+async def book_detail(request: Request, item_id: int, page: int = 1, rss_url: str | None = None):
+    source = resolve_source(rss_url)
+    if source is None:
         raise HTTPException(status_code=404, detail="Book not found")
-    await run_in_threadpool(library.ensure_covers, [item_id])
-    book = library.books[item_id - 1]
-    return templates.TemplateResponse(request, "detail.html", {"book": book, "page": page})
+    lib = get_library(source)
+    await run_in_threadpool(lib.load_sync)
+    if item_id < 1 or item_id > len(lib.books):
+        raise HTTPException(status_code=404, detail="Book not found")
+    await run_in_threadpool(lib.ensure_covers, [item_id])
+    book = lib.books[item_id - 1]
+    return templates.TemplateResponse(
+        request, "detail.html", {"book": book, "page": page, "rss_url": source}
+    )
 
 
 @app.post("/refresh", response_class=HTMLResponse)
-async def refresh(request: Request):
-    await run_in_threadpool(library.reload_sync)
-    page = await prepare_page(1)
-    return templates.TemplateResponse(request, "grid.html", grid_context(page))
+async def refresh(request: Request, rss_url: str | None = None):
+    source = resolve_source(rss_url)
+    if source is None:
+        return templates.TemplateResponse(request, "empty.html", {"rss_url": ""})
+    lib = get_library(source)
+    await run_in_threadpool(lib.reload_sync)
+    page = await prepare_page(lib, 1)
+    return templates.TemplateResponse(request, "grid.html", grid_context(lib, page, rss_url=source, oob=True))

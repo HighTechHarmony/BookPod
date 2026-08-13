@@ -1,3 +1,12 @@
+{% if oob %}
+{# Out-of-band swaps: keep the header title / feed icon / tab title in sync
+   whenever this fragment is returned via HTMX (pagination, refresh). #}
+<title id="doc-title" hx-swap-oob="innerHTML">{{ channel_title }}</title>
+<span id="channel-title" hx-swap-oob="innerHTML">{{ channel_title }}</span>
+<img id="feed-icon" hx-swap-oob="true" class="feed-icon"
+     src="{% if channel_image %}{{ channel_image }}{% else %}data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw=={% endif %}"
+     alt="" {% if not channel_image %}hidden{% endif %}>
+{% endif %}
 <p class="meta">{{ count }} audiobooks &middot; page {{ page }} of {{ page_count }}</p>
 {% if error %}
 <div class="notice">Error: {{ error }}</div>
@@ -6,7 +15,7 @@
 <div class="grid">
   {% for book in page_books %}
   <button class="card"
-          hx-get="/book/{{ book.index }}?page={{ page }}"
+          hx-get="/book/{{ book.index }}?page={{ page }}&rss_url={{ rss_url|urlencode }}"
           hx-target="#detail"
           hx-swap="innerHTML">
     {% if book.cover %}
@@ -22,7 +31,7 @@
 
 <nav class="pagination">
   {% if page > 1 %}
-  <button hx-get="/grid?page={{ page - 1 }}" hx-target="#grid" hx-swap="innerHTML">&lsaquo; Prev</button>
+  <button hx-get="/grid?page={{ page - 1 }}&rss_url={{ rss_url|urlencode }}" hx-target="#grid" hx-swap="innerHTML">&lsaquo; Prev</button>
   {% else %}
   <button disabled>&lsaquo; Prev</button>
   {% endif %}
@@ -32,14 +41,14 @@
     <span class="dots">&hellip;</span>
     {% else %}
     <button class="{% if p == page %}active{% endif %}"
-            hx-get="/grid?page={{ p }}"
+            hx-get="/grid?page={{ p }}&rss_url={{ rss_url|urlencode }}"
             hx-target="#grid"
             hx-swap="innerHTML">{{ p }}</button>
     {% endif %}
   {% endfor %}
 
   {% if page < page_count %}
-  <button hx-get="/grid?page={{ page + 1 }}" hx-target="#grid" hx-swap="innerHTML">Next &rsaquo;</button>
+  <button hx-get="/grid?page={{ page + 1 }}&rss_url={{ rss_url|urlencode }}" hx-target="#grid" hx-swap="innerHTML">Next &rsaquo;</button>
   {% else %}
   <button disabled>Next &rsaquo;</button>
   {% endif %}
