@@ -1,0 +1,18 @@
+{% if enriched %}
+<div class="enrich-info">
+  <h3 class="enrich-heading">More about this book</h3>
+  <p class="enrich-title"><strong>{{ enriched.title }}</strong><span class="enrich-author"> &mdash; {{ enriched.author }}</span></p>
+  {% if enriched.subjects %}
+  <div class="genres">
+    {% for s in enriched.subjects %}<span class="genre">{{ s }}</span>{% endfor %}
+  </div>
+  {% endif %}
+  {% if enriched.description %}
+  <p class="synopsis">{{ enriched.description }}</p>
+  {% else %}
+  <p class="enrich-none">No synopsis found.</p>
+  {% endif %}
+</div>
+{% else %}
+<p class="enrich-none">No additional info found for this book.</p>
+{% endif %}

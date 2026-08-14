@@ -312,6 +312,21 @@
     .drawer-body audio { width: 100%; margin: 16px 0 8px; }
     .drawer-body .dl { display: inline-block; color: var(--accent); text-decoration: none; font-size: 0.85rem; }
     .drawer-body .dl:hover { text-decoration: underline; }
+    .enrich { margin-top: 16px; border-top: 1px solid #2a2f3d; padding-top: 14px; }
+    .enrich-loading, .enrich-none { font-size: 0.85rem; color: var(--muted); display: flex; align-items: center; gap: 8px; }
+    .enrich-heading { margin: 0 0 8px; font-size: 0.95rem; }
+    .enrich-title { margin: 0 0 10px; font-size: 0.9rem; }
+    .enrich-author { color: var(--muted); font-weight: 400; }
+    .genres { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+    .genre {
+      font-size: 0.72rem;
+      color: #b9c0ff;
+      background: #20263a;
+      border: 1px solid #333a4d;
+      border-radius: 999px;
+      padding: 3px 9px;
+    }
+    .synopsis { font-size: 0.85rem; color: #c8cede; white-space: pre-wrap; margin: 0; }
 
     @media (max-width: 520px) {
       .grid { grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); }

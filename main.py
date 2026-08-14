@@ -21,6 +21,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from feed import Cache, cached_download, default_cache_dir, load_input, parse_feed
+from enrich import enrich_book
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 COVERS_DIR = os.path.join(BASE_DIR, "covers")
@@ -344,8 +345,22 @@ async def book_detail(request: Request, item_id: int, page: int = 1, rss_url: st
     await run_in_threadpool(lib.ensure_covers, [item_id])
     book = lib.books[item_id - 1]
     return templates.TemplateResponse(
-        request, "detail.html", {"book": book, "page": page, "rss_url": source}
+        request, "detail.html", {"book": book, "page": page, "rss_url": source, "index": item_id}
     )
+
+
+@app.get("/enrich/{item_id}", response_class=HTMLResponse)
+async def enrich(request: Request, item_id: int, rss_url: str | None = None):
+    source = resolve_source(rss_url)
+    if source is None:
+        return templates.TemplateResponse(request, "enrich.html", {"enriched": None, "rss_url": ""})
+    lib = get_library(source)
+    await run_in_threadpool(lib.load_sync)
+    if item_id < 1 or item_id > len(lib.books):
+        raise HTTPException(status_code=404, detail="Book not found")
+    book = lib.books[item_id - 1]
+    enriched = await run_in_threadpool(enrich_book, book["title"], book["author"])
+    return templates.TemplateResponse(request, "enrich.html", {"enriched": enriched, "rss_url": source})
 
 
 @app.post("/refresh", response_class=HTMLResponse)
