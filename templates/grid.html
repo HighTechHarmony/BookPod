@@ -25,7 +25,7 @@
   {% for book in page_books %}
   <div class="card"
        hx-get="/book/{{ book.index }}?page={{ page }}&rss_url={{ rss_url|urlencode }}"
-       hx-target="#detail"
+       hx-target="#drawer-content"
        hx-swap="innerHTML">
     {% if book.cover_ready %}
     <img class="thumb" loading="lazy" src="{{ book.cover_src }}" alt="{{ book.title }} cover">
