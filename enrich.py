@@ -6,20 +6,32 @@ Two-step strategy:
   2. https://openlibrary.org{work_key}.json
        -> description (the synopsis).
 
+Audiobook feed titles are noisy in ways that break naive lookups:
+
+  * subtitles ("Foo: A Novel") make OpenLibrary's literal ``title=`` search
+    return zero docs, so we retry with progressively looser title variants;
+  * curly apostrophes/dashes differ between feeds and OpenLibrary records;
+  * the top-scoring match is often a boxed set / audiobook record with no
+    description, so we walk the scored candidates and return the first Work
+    that actually has a synopsis (falling back to the best match otherwise).
+
 Results are cached in-memory so repeated drawer opens don't re-query the API.
 """
 
 from __future__ import annotations
 
+import re
 import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
 
 USER_AGENT = "BookPod/1.0 (audiobook RSS library)"
 SEARCH_URL = "https://openlibrary.org/search.json"
 WORK_URL = "https://openlibrary.org{key}.json"
-TIMEOUT = 8
+TIMEOUT = 15
 MAX_GENRES = 8
+MAX_WORKS = 4  # candidate works probed per title variant for a synopsis
 _MAX_CACHE = 200
 
 _cache: dict[str, dict | None] = {}
@@ -32,66 +44,147 @@ def _get_json(url: str, params: dict | None = None) -> dict:
     return resp.json()
 
 
-def _lookup(title: str, author: str) -> dict | None:
-    try:
-        search = _get_json(SEARCH_URL, {"title": title, "author": author})
-    except Exception:  # noqa: BLE001 - network/API errors degrade gracefully
-        return None
+def _norm(s: str) -> str:
+    """Lowercase and normalize punctuation that differs between feeds & OpenLibrary."""
+    return (
+        (s or "")
+        .lower()
+        .replace("\u2019", "'")   # right single quote ’
+        .replace("\u2018", "'")   # left single quote ‘
+        .replace("\u2014", "-")   # em dash —
+        .replace("\u2013", "-")   # en dash –
+        .replace("\u00a0", " ")   # non-breaking space
+        .strip()
+    )
 
-    docs = search.get("docs") or []
-    if not docs:
-        return None
+
+def _candidate_titles(title: str) -> list[str]:
+    """Progressively looser search-title variants, deduplicated, in order.
+
+    Audiobook feed titles carry subtitle noise ("Foo: A Novel", ", Book 2")
+    that OpenLibrary's literal ``title=`` parameter returns no docs for. We
+    always try the full title first, then the part before the first colon,
+    then the head with a trailing series marker (Book/Vol/Part + number)
+    stripped.
+    """
+    t = (title or "").strip()
+    variants = [t]
+    if not t:
+        return variants
+
+    head = re.split(r"\s*:\s*", t, maxsplit=1)[0].strip()
+    if head and head != t:
+        variants.append(head)
+
+    stripped = re.sub(
+        r"(?i)[,\s]*(?:book|vol(?:ume)?|pt\.?|part|episode|#)\s*[0-9]+[a-z]?\s*$",
+        "", head,
+    ).strip()
+    if stripped and stripped != head:
+        variants.append(stripped)
+
+    seen: set[str] = set()
+    out: list[str] = []
+    for v in variants:
+        k = v.lower()
+        if k not in seen:
+            seen.add(k)
+            out.append(v)
+    return out
+
+
+def _lookup(title: str, author: str) -> dict | None:
+    nt = _norm(title)
+    aq = _norm(author)
+    fallback: dict | None = None
 
     def score(doc: dict) -> tuple[int, int]:
-        tq = (title or "").strip().lower()
-        dt = str(doc.get("title") or "").strip().lower()
-        if not tq:
+        dt = _norm(doc.get("title"))
+        if not nt:
             tscore = 3
-        elif dt == tq:
+        elif dt == nt:
             tscore = 0
-        elif dt.startswith(tq):
+        elif dt.startswith(nt):
             tscore = 1
-        elif tq in dt:
+        elif nt in dt:
             tscore = 2
         else:
             tscore = 3
-
-        aq = (author or "").strip().lower()
-        names = [str(n).lower() for n in (doc.get("author_name") or [])]
-        if aq and names and (aq in names[0] or names[0] in aq):
-            ascore = 0  # primary author matches
-        else:
-            ascore = 1
-
+        names = [_norm(n) for n in (doc.get("author_name") or [])]
+        ascore = 0 if aq and names and (aq in names[0] or names[0] in aq) else 1
         return (tscore, ascore)
 
-    # Prefer a Work whose title matches first, then whose primary author
-    # matches; its key points at the endpoint with the synopsis + subjects.
-    works = [d for d in docs if str(d.get("key", "")).startswith("/works/")]
-    pool = works or docs
-    top = min(pool, key=score)
-
-    enriched: dict = {
-        "title": top.get("title") or title,
-        "author": (top.get("author_name") or [author])[0],
-        "subjects": [],
-        "description": "",
-    }
-
-    work_key = top.get("key")
-    if work_key:
+    def fetch_work(doc: dict) -> dict | None:
+        work_key = doc.get("key")
+        if not work_key:
+            return None
         try:
-            work = _get_json(WORK_URL.format(key=work_key))
-            subjects = work.get("subjects") or top.get("subject") or []
-            enriched["subjects"] = [str(s) for s in subjects][:MAX_GENRES]
-            desc = work.get("description")
-            if isinstance(desc, dict):
-                desc = desc.get("value") or ""
-            enriched["description"] = desc if isinstance(desc, str) else ""
+            return _get_json(WORK_URL.format(key=work_key))
         except Exception:  # noqa: BLE001 - synopsis/subjects are best-effort
-            pass
+            return None
 
-    return enriched
+    def enrich_from(doc: dict, work: dict | None) -> dict:
+        subjects: list = []
+        desc = ""
+        if work is not None:
+            subjects = work.get("subjects") or doc.get("subject") or []
+            d = work.get("description")
+            if isinstance(d, dict):
+                d = d.get("value") or ""
+            desc = d if isinstance(d, str) else ""
+        return {
+            "title": doc.get("title") or title,
+            "author": (doc.get("author_name") or [author])[0],
+            "subjects": [str(s) for s in subjects][:MAX_GENRES],
+            "description": desc,
+        }
+
+    # Try each progressively looser title variant. For each one, walk the
+    # scored candidates and return the first Work that actually carries a
+    # synopsis (boxed sets / audiobook records often score high but have none).
+    # The best-scored match from the first variant is kept as a fallback so we
+    # still return title/author/subjects when no synopsis exists anywhere.
+    for tq in _candidate_titles(title):
+        try:
+            search = _get_json(SEARCH_URL, {"title": tq, "author": author})
+        except Exception:  # noqa: BLE001 - network/API errors degrade gracefully
+            continue
+        docs = search.get("docs") or []
+        if not docs:
+            continue
+
+        works = [d for d in docs if str(d.get("key", "")).startswith("/works/")]
+        pool = works or docs
+        ordered = sorted(pool, key=score)
+        candidates = ordered[:MAX_WORKS]
+
+        # Fast path: the best-scored Work usually carries the synopsis, so
+        # probe it alone and avoid needless parallel requests to OpenLibrary.
+        results: dict[int, dict] = {
+            0: enrich_from(candidates[0], fetch_work(candidates[0])),
+        }
+        if results[0]["description"]:
+            return results[0]
+        if fallback is None:
+            fallback = results[0]
+
+        # Slow path: the top match is a synopsis-less boxed set / audiobook
+        # record. Probe the remaining candidates concurrently — the work JSON
+        # endpoint is slow (~5s+), so serial probes would stall the drawer.
+        if len(candidates) > 1:
+            with ThreadPoolExecutor(max_workers=len(candidates) - 1) as ex:
+                fut_map = {
+                    ex.submit(fetch_work, doc): i
+                    for i, doc in enumerate(candidates[1:], start=1)
+                }
+                for fut in as_completed(fut_map):
+                    i = fut_map[fut]
+                    results[i] = enrich_from(candidates[i], fut.result())
+            for i in range(1, len(candidates)):
+                if results[i]["description"]:
+                    return results[i]
+
+    return fallback
 
 
 def enrich_book(title: str, author: str) -> dict | None:

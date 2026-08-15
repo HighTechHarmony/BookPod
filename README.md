@@ -113,18 +113,30 @@ When a book is opened, BookPod can pull extra metadata from the
 [Open Library](https://openlibrary.org/) API and show it in the detail drawer:
 corrected title/author, genre tags, and a synopsis.
 
-The lookup is a two-step call in `enrich.py`:
+The lookup in `enrich.py` is a two-step call:
 
-1. `https://openlibrary.org/search.json?title=…&author=…` — picks the best
-   Work by **title first, then primary author** (so adaptations/sequels lose to
-   the actual book), and returns the corrected title, author, and the Work key.
+1. `https://openlibrary.org/search.json?title=…&author=…` — finds candidate
+   Works and scores them by **title first, then primary author**.
 2. `https://openlibrary.org{work_key}.json` — the synopsis (`description`) and
    genres (`subjects`).
+
+Audiobook feed titles are noisy, so the lookup defends against common misses:
+
+- **Looser title variants**: if the full title (e.g. *Foo: A Novel*) returns no
+  search results, it retries with the part before the colon, then with trailing
+  series markers (*Book 2*, *Volume 1*) stripped.
+- **Synopsis-first selection**: instead of blindly trusting the top-scored
+  match (which is often a boxed set or audiobook record with no description),
+  it walks the scored candidates and returns the first Work that actually has a
+  synopsis, falling back to the best match otherwise.
+- **Punctuation normalization**: curly apostrophes/dashes are folded before
+  comparing titles and authors.
 
 Details:
 
 - Requests use a descriptive `User-Agent` out of courtesy (helps avoid
-  rate-limiting) and a short timeout.
+  rate-limiting) and a short timeout; candidate Works are probed concurrently
+  (up to 4) only when the top match lacks a synopsis.
 - Results are cached in memory (keyed by title+author), so reopening a book
   doesn't re-query the API.
 - The feature is best-effort: if OpenLibrary has no good match (e.g. the feed
