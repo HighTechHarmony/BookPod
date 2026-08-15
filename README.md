@@ -23,22 +23,27 @@ no frontend build tools.
 ```
 main.py                 FastAPI application (routes, search, per-feed library)
 feed.py                 RSS parsing + SHA-1 disk caching (shared, stdlib only)
+enrich.py               OpenLibrary enrichment lookups (genres + synopsis)
+config.py               Loads config.toml (defaults + TOML merging)
+config.toml             Private configuration (git-ignored)
+config.toml.example     Committed template for config.toml
 rss_to_html.py          Standalone CLI that renders the feed to a static page
-templates/              Jinja2 templates (base, grid, detail, empty)
+templates/              Jinja2 templates (base, grid, detail, empty, enrich)
 requirements.txt        Python dependencies
-feed_url.txt            Private default feed source (git-ignored)
-feed_url.txt.example    Committed template for feed_url.txt
 bookpod.service.example Example systemd unit
 startup.sh              Convenience: runs uvicorn locally
 ```
 
 ## Requirements
 
-- Python 3.10+ (3.14 used in dev). On Debian/Ubuntu, install the venv module if
+- Python 3.11+ (3.14 used in dev; 3.11+ is needed for the stdlib `tomllib`
+  used to read config.toml). On Debian/Ubuntu, install the venv module if
   missing: `sudo apt install python3.14-venv` (adjust the version).
-- Packages in `requirements.txt` (FastAPI, Uvicorn, Jinja2, python-multipart).
-- Internet access on first load (to fetch the feed and cover images), unless you
-  point everything at local files and a warm cache.
+- Packages in `requirements.txt` (FastAPI, Uvicorn, Jinja2, python-multipart,
+  requests).
+- Internet access on first load (to fetch the feed and cover images) and for
+  OpenLibrary enrichment, unless you point everything at local files and a warm
+  cache.
 
 ## Quick start (local dev)
 
@@ -49,8 +54,8 @@ cd <project-dir>
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 
-# Configure your default feed (optional; see "Configuration")
-cp feed_url.txt.example feed_url.txt   # then edit feed_url.txt with your URL
+# Configure the app (optional; see "Configuration")
+cp config.toml.example config.toml   # then edit config.toml with your settings
 
 # Run
 ./startup.sh                           # or: .venv/bin/uvicorn main:app --host 127.0.0.1 --port 8000
@@ -65,25 +70,74 @@ http://127.0.0.1:8000/?rss_url=https://example.com/feed.rss
 
 ## Configuration
 
-The app is configured via environment variables and the private `feed_url.txt`
-file.
+Configuration lives in **`config.toml`** (git-ignored, so it can hold private
+settings such as a personal feed URL). Copy `config.toml.example` to
+`config.toml` and edit it:
 
-| Variable | Default | Purpose |
-|----------|---------|---------|
-| `FEED_SOURCE` | *(see below)* | Overrides the default feed source entirely |
-| `CACHE_DIR` | `~/.cache/audiobook_feed_library` | Where feeds + covers are cached |
-| `PAGE_SIZE` | `20` | Books per page |
-| `REFRESH` | `0` | `1`/`true` forces re-fetch on startup |
+```toml
+[feed]
+# Default RSS feed shown when the app opens. "" (blank) = require the user to
+# enter a URL in the menu.
+url = ""
 
-**Default feed source resolution** (`read_default_feed_source` in `main.py`):
+[enrichment]
+# Look up genres + synopsis from OpenLibrary when a book is opened.
+enabled = true
 
-1. `FEED_SOURCE` env var, if set
-2. first non-comment line of `feed_url.txt` (git-ignored, so it can hold a
-   private URL safely)
-3. fallback to `podbook_reduced.rss` in the app directory
+[app]
+# Books per page.
+page_size = 20
+# Custom cache directory. "" = default (~/.cache/audiobook_feed_library).
+cache_dir = ""
+# Force re-fetch of feeds and covers on startup.
+refresh_on_start = false
+```
+
+The default feed resolution is: `FEED_SOURCE` env var, then `[feed] url` from
+`config.toml` (which may be blank). Environment variables override the TOML
+values:
+
+| Variable | Overrides | Notes |
+|----------|-----------|-------|
+| `FEED_SOURCE` | `[feed] url` | Default feed source |
+| `CACHE_DIR` | `[app] cache_dir` | Where feeds + covers are cached |
+| `PAGE_SIZE` | `[app] page_size` | Books per page |
+| `REFRESH` | `[app] refresh_on_start` | `1`/`true` forces re-fetch on startup |
+| `BOOKPOD_CONFIG` | — | Path to a different config file |
 
 Covers are written to `covers/<sha1(feed)>/NNNN.jpg` (one subdirectory per feed)
 and served at `/covers/...`.
+
+## OpenLibrary enrichment
+
+When a book is opened, BookPod can pull extra metadata from the
+[Open Library](https://openlibrary.org/) API and show it in the detail drawer:
+corrected title/author, genre tags, and a synopsis.
+
+The lookup is a two-step call in `enrich.py`:
+
+1. `https://openlibrary.org/search.json?title=…&author=…` — picks the best
+   Work by **title first, then primary author** (so adaptations/sequels lose to
+   the actual book), and returns the corrected title, author, and the Work key.
+2. `https://openlibrary.org{work_key}.json` — the synopsis (`description`) and
+   genres (`subjects`).
+
+Details:
+
+- Requests use a descriptive `User-Agent` out of courtesy (helps avoid
+  rate-limiting) and a short timeout.
+- Results are cached in memory (keyed by title+author), so reopening a book
+  doesn't re-query the API.
+- The feature is best-effort: if OpenLibrary has no good match (e.g. the feed
+  title differs from the canonical one, like *1984* vs *Nineteen Eighty-Four*),
+  the drawer just shows the feed's own data and a "no additional info" note —
+  the app keeps working regardless.
+- Toggle it off globally in `config.toml`:
+
+  ```toml
+  [enrichment]
+  enabled = false
+  ```
 
 ## Standalone CLI
 
@@ -148,4 +202,4 @@ to `ReadWritePaths`.
 |---------|-------------|
 | `status=203/EXEC` | systemd couldn't run `ExecStart`. Check the venv path exists on the server, the `User` can read/execute it, and `ProtectHome=false` if the app is under `/home`. |
 | `Could not import module "main"` | Wrong working directory. Run uvicorn from the app dir (or set `WorkingDirectory=`), or use `--app-dir`. |
-| Blank page / throbber never resolves | Feed unreachable or covers failing — check `journalctl -u bookpod -f` for the error, and that the feed URL in `feed_url.txt`/`?rss_url=` is reachable. |
+| Blank page / throbber never resolves | Feed unreachable or covers failing — check `journalctl -u bookpod -f` for the error, and that the feed URL in `config.toml`/`?rss_url=` is reachable. |

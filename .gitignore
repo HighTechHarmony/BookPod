@@ -1,4 +1,6 @@
-# Private default feed URL - contains your personal feed; do not commit.
+# Private config - may contain a personal feed URL; do not commit.
+config.toml
+# Legacy private feed file, superseded by config.toml
 feed_url.txt
 
 # Generated / runtime artifacts

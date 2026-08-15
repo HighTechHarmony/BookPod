@@ -1,0 +1,22 @@
+# BookPod configuration.
+#
+# Copy this file to config.toml (git-ignored) and edit it. Environment
+# variables still override these settings: FEED_SOURCE, CACHE_DIR, PAGE_SIZE,
+# REFRESH, and BOOKPOD_CONFIG (path to a different config file).
+
+[feed]
+# Default RSS feed shown when the app opens. Leave "" (blank) to require the
+# user to enter a URL in the menu.
+url = ""
+
+[enrichment]
+# Look up genres + synopsis from OpenLibrary when a book is opened.
+enabled = true
+
+[app]
+# Books per page.
+page_size = 20
+# Custom cache directory. "" = default (~/.cache/audiobook_feed_library).
+cache_dir = ""
+# Force re-fetch of feeds and covers on startup.
+refresh_on_start = false

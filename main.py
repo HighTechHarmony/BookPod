@@ -22,36 +22,28 @@ from fastapi.templating import Jinja2Templates
 
 from feed import Cache, cached_download, default_cache_dir, load_input, parse_feed
 from enrich import enrich_book
+from config import load_config
+
+CONFIG = load_config()
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 COVERS_DIR = os.path.join(BASE_DIR, "covers")
 TEMPLATES_DIR = os.path.join(BASE_DIR, "templates")
 
-# Configuration (all overridable via environment variables)
+# Configuration: config.toml is the base; environment variables override it.
 def read_default_feed_source() -> str:
     """Resolve the default feed source.
 
-    Priority: FEED_SOURCE env var > private feed_url.txt > local reduced feed.
-
-    feed_url.txt is git-ignored so a personal/private feed URL is never
-    committed to the repo. Lines starting with '#' are treated as comments.
+    Priority: FEED_SOURCE env var > config.toml [feed].url (may be blank).
     """
-    env = os.environ.get("FEED_SOURCE")
-    if env:
-        return env
-    url_file = os.path.join(BASE_DIR, "feed_url.txt")
-    if os.path.isfile(url_file):
-        with open(url_file, encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith("#"):
-                    return line
-    return os.path.join(BASE_DIR, "bookpod_reduced.rss")
+    return os.environ.get("FEED_SOURCE") or CONFIG["feed_url"]
 
 
-CACHE_DIR = os.environ.get("CACHE_DIR") or default_cache_dir()
-REFRESH_ON_START = os.environ.get("REFRESH", "").strip().lower() in ("1", "true", "yes")
-PAGE_SIZE = int(os.environ.get("PAGE_SIZE", "20") or 20)
+CACHE_DIR = os.environ.get("CACHE_DIR") or CONFIG["cache_dir"] or default_cache_dir()
+_refresh_env = os.environ.get("REFRESH", "").strip().lower()
+REFRESH_ON_START = (_refresh_env in ("1", "true", "yes")) if _refresh_env else CONFIG["refresh_on_start"]
+PAGE_SIZE = int(os.environ.get("PAGE_SIZE") or CONFIG["page_size"] or 20)
+ENRICHMENT_ENABLED = CONFIG["enrichment_enabled"]
 
 os.makedirs(COVERS_DIR, exist_ok=True)
 
@@ -345,12 +337,18 @@ async def book_detail(request: Request, item_id: int, page: int = 1, rss_url: st
     await run_in_threadpool(lib.ensure_covers, [item_id])
     book = lib.books[item_id - 1]
     return templates.TemplateResponse(
-        request, "detail.html", {"book": book, "page": page, "rss_url": source, "index": item_id}
+        request, "detail.html",
+        {"book": book, "page": page, "rss_url": source, "index": item_id,
+         "enrichment_enabled": ENRICHMENT_ENABLED},
     )
 
 
 @app.get("/enrich/{item_id}", response_class=HTMLResponse)
 async def enrich(request: Request, item_id: int, rss_url: str | None = None):
+    if not ENRICHMENT_ENABLED:
+        return templates.TemplateResponse(
+            request, "enrich.html", {"disabled": True, "enriched": None, "rss_url": ""}
+        )
     source = resolve_source(rss_url)
     if source is None:
         return templates.TemplateResponse(request, "enrich.html", {"enriched": None, "rss_url": ""})

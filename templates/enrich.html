@@ -1,4 +1,6 @@
-{% if enriched %}
+{% if disabled %}
+<p class="enrich-none">Expanded data lookups are disabled.</p>
+{% elif enriched %}
 <div class="enrich-info">
   <h3 class="enrich-heading">More about this book</h3>
   <p class="enrich-title"><strong>{{ enriched.title }}</strong><span class="enrich-author"> &mdash; {{ enriched.author }}</span></p>
