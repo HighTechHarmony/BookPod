@@ -22,12 +22,11 @@ no frontend build tools.
 
 ```
 main.py                 FastAPI application (routes, search, per-feed library)
-feed.py                 RSS parsing + SHA-1 disk caching (shared, stdlib only)
+feed.py                 RSS parsing + SHA-1 disk caching
 enrich.py               OpenLibrary enrichment lookups (genres + synopsis)
 config.py               Loads config.toml (defaults + TOML merging)
 config.toml             Private configuration (git-ignored)
 config.toml.example     Committed template for config.toml
-rss_to_html.py          Standalone CLI that renders the feed to a static page
 templates/              Jinja2 templates (base, grid, detail, empty, enrich)
 requirements.txt        Python dependencies
 bookpod.service.example Example systemd unit
@@ -138,17 +137,6 @@ Details:
   [enrichment]
   enabled = false
   ```
-
-## Standalone CLI
-
-The original one-shot generator is still available:
-
-```bash
-python3 rss_to_html.py <input> [output_dir] [--page-size N] [--no-download] [--title TEXT] [--cache-dir DIR] [--refresh]
-```
-
-It shares the same parsing/caching code (`feed.py`) and produces a single
-self-contained `index.html` with a paged cover grid.
 
 ## Deploying as a systemd service
 

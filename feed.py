@@ -54,6 +54,22 @@ def text_of(elem: ET.Element | None) -> str:
     return elem.text.strip()
 
 
+def desc_text(elem: ET.Element | None) -> str:
+    """Return the full inner content of a <description> element.
+
+    Podcast descriptions are usually CDATA-wrapped HTML, in which case
+    ``elem.text`` already holds the entire string (tags included). When the
+    HTML is instead embedded as real child elements, the inner markup is
+    reconstructed so the description isn't truncated to just the leading text.
+    """
+    if elem is None:
+        return ""
+    out = elem.text or ""
+    for child in elem:
+        out += ET.tostring(child, encoding="unicode")
+    return out.strip()
+
+
 # --------------------------------------------------------------------------
 # Fetching & on-disk caching
 # --------------------------------------------------------------------------
@@ -276,7 +292,7 @@ def parse_feed(data: bytes) -> tuple[str, str | None, list[dict]]:
             "cover": cover or "",
             "link": link,
             "pubDate": text_of(find_child(item_el, "pubDate")) or "",
-            "description": text_of(find_child(item_el, "description")) or "",
+            "description": desc_text(find_child(item_el, "description")),
             "audio": audio,
             "audio_type": audio_type,
             "audio_length": audio_length,

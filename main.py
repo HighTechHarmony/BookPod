@@ -14,6 +14,9 @@ import math
 import os
 import threading
 
+import nh3
+from markupsafe import Markup
+
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import HTMLResponse
@@ -48,6 +51,19 @@ ENRICHMENT_ENABLED = CONFIG["enrichment_enabled"]
 os.makedirs(COVERS_DIR, exist_ok=True)
 
 templates = Jinja2Templates(directory=TEMPLATES_DIR)
+
+# Sanitize RSS description HTML before rendering it in the detail drawer.
+# Only a small whitelist of formatting tags is kept; scripts, event handlers,
+# javascript: URLs, etc. are stripped by nh3.
+_ALLOWED_DESC_TAGS = {"p", "br", "strong", "b", "em", "i", "a", "ul", "ol", "li", "blockquote"}
+_ALLOWED_DESC_ATTRS = {"a": {"href", "title"}}
+
+
+def _sanitize_desc(html: str) -> Markup:
+    return Markup(nh3.clean(html or "", tags=_ALLOWED_DESC_TAGS, attributes=_ALLOWED_DESC_ATTRS))
+
+
+templates.env.filters["sanitize"] = _sanitize_desc
 
 
 class Library:
@@ -134,6 +150,14 @@ class Library:
                     f.write(data)
                 book["cover"] = rel
 
+    def cover_rel(self, idx: int) -> str:
+        """Local URL for a book's cover (regardless of whether it's on disk)."""
+        return f"/covers/{self.covers_key}/{idx:04d}.jpg"
+
+    def cover_ready(self, idx: int) -> bool:
+        """True when the cover for 1-based index idx is already on disk."""
+        return os.path.exists(os.path.join(self.covers_dir, f"{idx:04d}.jpg"))
+
 
 # One Library per feed source, created lazily; the shared Cache dir keeps a
 # single on-disk cache keyed by (feed, url).
@@ -163,8 +187,9 @@ def page_count(lib: "Library") -> int:
 
 
 def pagination_items(page: int, total: int) -> list:
-    """Page numbers with '…' gaps, mirroring the old client-side logic."""
-    if total <= 7:
+    """Page numbers with '…' gaps: first block 1..5, a window around the
+    current page, and the last 3 pages. Gaps become a single '…'."""
+    if total <= 11:
         return list(range(1, total + 1))
     out: list = []
 
@@ -176,14 +201,25 @@ def pagination_items(page: int, total: int) -> list:
         for i in range(a, b + 1):
             push(i)
 
-    push(1)
-    if page > 3:
+    last = 0  # highest page number emitted so far
+
+    # First block: 1..5 always clickable before the first '…'.
+    push_range(1, 5)
+    last = 5
+
+    # Window around the current page, clamped outside the fixed blocks.
+    win_lo = max(6, page - 2)
+    win_hi = min(total - 3, page + 2)
+    if win_lo <= win_hi:
+        if last + 1 < win_lo:
+            out.append("…")
+        push_range(win_lo, win_hi)
+        last = win_hi
+
+    # Last block: last 3 pages.
+    if last + 1 < total - 2:
         out.append("…")
-    push_range(max(2, page - 1), min(total - 1, page + 1))
-    if page < total - 2:
-        out.append("…")
-    if total > 1:
-        push(total)
+    push_range(max(last + 1, total - 2), total)
     return out
 
 
@@ -216,12 +252,18 @@ def grid_context(lib: "Library", page: int, rss_url: str = "", oob: bool = False
                  search: str | None = None) -> dict:
     search, entries = filter_books(lib, search)
     page, total, page_slice = paginate(entries, page)
-    page_books = [dict(book, index=i) for i, book in page_slice]
+    page_books = []
+    for i, book in page_slice:
+        b = dict(book, index=i)
+        b["cover_ready"] = lib.cover_ready(i)
+        b["cover_src"] = lib.cover_rel(i) if b["cover_ready"] else ""
+        page_books.append(b)
     return {
         "page": page,
         "page_count": total,
         "page_items": pagination_items(page, total),
         "page_books": page_books,
+        "has_pending": any(not b["cover_ready"] for b in page_books),
         "count": len(lib.books),
         "result_count": len(entries),
         "search": search,
@@ -314,15 +356,43 @@ async def grid(request: Request, page: int = 1, rss_url: str | None = None,
         return templates.TemplateResponse(request, "empty.html", {"rss_url": ""})
     lib = get_library(source)
     await run_in_threadpool(lib.load_sync)
+    # Covers are rendered as placeholders when not yet on disk and filled in
+    # asynchronously by /covers-prepare (see grid.html), so this route never
+    # blocks on cover downloads.
+    return templates.TemplateResponse(
+        request, "grid.html",
+        grid_context(lib, page, rss_url=source, oob=True, search=search),
+    )
+
+
+@app.get("/covers-prepare", response_class=HTMLResponse)
+async def covers_prepare(request: Request, page: int = 1, rss_url: str | None = None,
+                         search: str | None = None):
+    """Download the covers for one page and swap them in as they arrive.
+
+    Triggered by grid.html right after a page renders: this returns a set of
+    out-of-band <img> elements (hx-swap-oob="outerHTML") that replace the
+    placeholder spans on the page. Books whose covers failed to download keep
+    their placeholder.
+    """
+    source = resolve_source(rss_url)
+    if source is None:
+        return HTMLResponse("")
+    lib = get_library(source)
+    await run_in_threadpool(lib.load_sync)
     _search, entries = filter_books(lib, search)
     page, _total, page_slice = paginate(entries, page)
     indices = [i for i, _ in page_slice]
     if indices:
         await run_in_threadpool(lib.ensure_covers, indices)
-    return templates.TemplateResponse(
-        request, "grid.html",
-        grid_context(lib, page, rss_url=source, oob=True, search=search),
-    )
+    parts = []
+    for i, _ in page_slice:
+        if lib.cover_ready(i):
+            parts.append(
+                f'<img id="cover-{i}" hx-swap-oob="outerHTML" class="thumb" '
+                f'loading="lazy" src="{lib.cover_rel(i)}" alt="">'
+            )
+    return HTMLResponse("".join(parts))
 
 
 @app.get("/book/{item_id}", response_class=HTMLResponse)

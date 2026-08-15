@@ -10,7 +10,7 @@
     <p class="author">{{ book.author }}</p>
 
     {% if book.description %}
-    <p class="desc">{{ book.description }}</p>
+    <p class="desc">{{ book.description|sanitize }}</p>
     {% endif %}
 
     {% if book.pubDate %}
@@ -18,7 +18,11 @@
     {% endif %}
 
     {% if book.audio %}
-    <audio controls preload="none" src="{{ book.audio }}"></audio>
+    <div class="audio-row">
+      <button class="seek-btn" onclick="miniSeek(-30)" aria-label="Rewind 30 seconds">&#9206; 30</button>
+      <audio id="book-audio" controls preload="none" src="{{ book.audio }}"></audio>
+      <button class="seek-btn" onclick="miniSeek(30)" aria-label="Forward 30 seconds">30 &#9193;</button>
+    </div>
     <a class="dl" href="{{ book.audio }}" download>Download audio</a>
     {% else %}
     <p class="pubdate">No audio enclosure available.</p>

@@ -153,6 +153,11 @@
       aspect-ratio: 1 / 1;
       border-radius: var(--radius);
       background: #232838;
+      animation: placeholder-pulse 1.6s ease-in-out infinite;
+    }
+    @keyframes placeholder-pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.45; }
     }
     .pagination {
       display: flex;
@@ -328,6 +333,67 @@
     }
     .synopsis { font-size: 0.85rem; color: #c8cede; white-space: pre-wrap; margin: 0; }
 
+    /* Mini player bar */
+    .mini-player {
+      position: fixed;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      z-index: 25;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      background: rgba(18, 20, 28, 0.96);
+      backdrop-filter: blur(6px);
+      border-top: 1px solid #2a2f3d;
+      padding: 10px 18px;
+    }
+    .mini-player[hidden] { display: none; }
+    .mini-player .mp-title {
+      flex: 1;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      background: none;
+      border: 0;
+      color: var(--text);
+      font: inherit;
+      font-size: 0.9rem;
+      text-align: left;
+      cursor: pointer;
+      padding: 0;
+    }
+    .mini-player .mp-title:hover { color: var(--accent); }
+    .mini-player .mp-btn {
+      flex-shrink: 0;
+      min-width: 42px;
+      padding: 7px 10px;
+      border: 1px solid #333a4d;
+      border-radius: 7px;
+      background: var(--panel);
+      color: var(--text);
+      font: inherit;
+      font-size: 0.85rem;
+      cursor: pointer;
+    }
+    .mini-player .mp-btn:hover:not(:disabled) { border-color: var(--accent); }
+    .mini-player .mp-play { background: var(--accent); border-color: var(--accent); color: #0b0d16; font-weight: 600; }
+    .audio-row { display: flex; align-items: center; gap: 8px; margin: 16px 0 8px; }
+    .audio-row audio { flex: 1; min-width: 0; margin: 0; }
+    .seek-btn {
+      flex-shrink: 0;
+      padding: 6px 9px;
+      border: 1px solid #333a4d;
+      border-radius: 7px;
+      background: var(--panel);
+      color: var(--text);
+      font: inherit;
+      font-size: 0.8rem;
+      cursor: pointer;
+    }
+    .seek-btn:hover { border-color: var(--accent); }
+
     @media (max-width: 520px) {
       .grid { grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); }
     }
@@ -392,10 +458,21 @@
   <div id="detail-backdrop" class="backdrop" onclick="closeDrawer()"></div>
   <aside id="detail" class="drawer" aria-label="Book details"></aside>
 
+  <div id="mini-player" class="mini-player" hidden>
+    <button id="mp-title" class="mp-title" title="Open player"></button>
+    <button id="mp-rewind" class="mp-btn" aria-label="Rewind 30 seconds">&#9206; 30</button>
+    <button id="mp-play" class="mp-btn mp-play" aria-label="Play/Pause">&#9654;</button>
+    <button id="mp-forward" class="mp-btn" aria-label="Forward 30 seconds">30 &#9193;</button>
+  </div>
+
   <script>
     function closeDrawer() {
       document.getElementById('detail').classList.remove('open');
       document.getElementById('detail-backdrop').classList.remove('show');
+    }
+    function openDrawer() {
+      document.getElementById('detail').classList.add('open');
+      document.getElementById('detail-backdrop').classList.add('show');
     }
     function toggleMenu() {
       var open = document.getElementById('menu').classList.toggle('open');
@@ -411,14 +488,55 @@
       var input = document.getElementById('search-input');
       if (input) input.value = btn.getAttribute('data-author');
     }
+    // The audio element lives inside the (hidden) drawer. Query it fresh each
+    // time, because every new book swaps a new <audio> into #detail.
+    function currentAudio() {
+      var el = document.getElementById('detail');
+      return el ? el.querySelector('#book-audio') : null;
+    }
+    function miniSeek(delta) {
+      var a = currentAudio();
+      if (!a) return;
+      var dur = isFinite(a.duration) ? a.duration : Infinity;
+      a.currentTime = Math.max(0, Math.min((a.currentTime || 0) + delta, dur));
+    }
+    function miniToggle() {
+      var a = currentAudio();
+      if (!a) return;
+      if (a.paused) { a.play(); } else { a.pause(); }
+    }
+    function updatePlayBtn() {
+      var a = currentAudio();
+      var b = document.getElementById('mp-play');
+      if (b) b.innerHTML = a && !a.paused ? '&#10074;&#10074;' : '&#9654;';
+    }
+    // 'play'/'pause' don't bubble, so listen in the capture phase.
+    document.addEventListener('play', function (e) {
+      if (e.target && e.target.id === 'book-audio') updatePlayBtn();
+    }, true);
+    document.addEventListener('pause', function (e) {
+      if (e.target && e.target.id === 'book-audio') updatePlayBtn();
+    }, true);
+    document.getElementById('mp-play').addEventListener('click', miniToggle);
+    document.getElementById('mp-rewind').addEventListener('click', function () { miniSeek(-30); });
+    document.getElementById('mp-forward').addEventListener('click', function () { miniSeek(30); });
+    document.getElementById('mp-title').addEventListener('click', openDrawer);
     // Whenever a card's detail fragment is swapped into #detail, slide the
-    // drawer open. Closing only hides it (content stays in the DOM), so any
-    // audio playback in the drawer keeps playing.
+    // drawer open and surface the mini player. Closing only hides the drawer
+    // (content stays in the DOM), so audio keeps playing.
     document.body.addEventListener('htmx:afterSwap', function (evt) {
       var target = evt.detail.target;
       if (target && target.id === 'detail') {
         document.getElementById('detail').classList.add('open');
         document.getElementById('detail-backdrop').classList.add('show');
+        var mp = document.getElementById('mini-player');
+        var audio = currentAudio();
+        if (mp && audio) {
+          var title = document.getElementById('detail').querySelector('h2');
+          document.getElementById('mp-title').textContent = title ? title.textContent : '';
+          mp.hidden = false;
+          updatePlayBtn();
+        }
       }
     });
   </script>

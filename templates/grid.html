@@ -27,10 +27,10 @@
        hx-get="/book/{{ book.index }}?page={{ page }}&rss_url={{ rss_url|urlencode }}"
        hx-target="#detail"
        hx-swap="innerHTML">
-    {% if book.cover %}
-    <img class="thumb" loading="lazy" src="{{ book.cover }}" alt="{{ book.title }} cover">
+    {% if book.cover_ready %}
+    <img class="thumb" loading="lazy" src="{{ book.cover_src }}" alt="{{ book.title }} cover">
     {% else %}
-    <span class="placeholder"></span>
+    <span class="placeholder" id="cover-{{ book.index }}"></span>
     {% endif %}
     <span class="title">{{ book.title }}</span>
     <button class="author-btn" data-author="{{ book.author }}"
@@ -40,6 +40,11 @@
   </div>
   {% endfor %}
 </div>
+
+{% if has_pending %}
+<div hx-get="/covers-prepare?page={{ page }}&rss_url={{ rss_url|urlencode }}&search={{ search|urlencode }}"
+     hx-trigger="load" hx-swap="none" style="display:none"></div>
+{% endif %}
 
 <nav class="pagination">
   {% if page > 1 %}
