@@ -20,8 +20,10 @@ Results are cached in-memory so repeated drawer opens don't re-query the API.
 
 from __future__ import annotations
 
+import math
 import re
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
@@ -33,8 +35,15 @@ TIMEOUT = 15
 MAX_GENRES = 8
 MAX_WORKS = 4  # candidate works probed per title variant for a synopsis
 _MAX_CACHE = 200
+_ENRICH_UNAVAILABLE_TTL = 300  # seconds to remember OpenLibrary being unreachable
 
-_cache: dict[str, dict | None] = {}
+# Statuses returned alongside enriched data so the UI can distinguish a genuine
+# "no match" from "the enrichment service is down/unreachable".
+ENRICH_OK = "ok"
+ENRICH_NO_MATCH = "not_found"
+ENRICH_UNAVAILABLE = "unavailable"
+
+_cache: dict[str, tuple[str, dict | None, float]] = {}  # key -> (status, data, expiry)
 _cache_lock = threading.Lock()
 
 
@@ -93,10 +102,11 @@ def _candidate_titles(title: str) -> list[str]:
     return out
 
 
-def _lookup(title: str, author: str) -> dict | None:
+def _lookup(title: str, author: str) -> tuple[str, dict | None]:
     nt = _norm(title)
     aq = _norm(author)
     fallback: dict | None = None
+    reachable = False  # True once any search API call returns a response
 
     def score(doc: dict) -> tuple[int, int]:
         dt = _norm(doc.get("title"))
@@ -149,6 +159,7 @@ def _lookup(title: str, author: str) -> dict | None:
             search = _get_json(SEARCH_URL, {"title": tq, "author": author})
         except Exception:  # noqa: BLE001 - network/API errors degrade gracefully
             continue
+        reachable = True
         docs = search.get("docs") or []
         if not docs:
             continue
@@ -164,7 +175,7 @@ def _lookup(title: str, author: str) -> dict | None:
             0: enrich_from(candidates[0], fetch_work(candidates[0])),
         }
         if results[0]["description"]:
-            return results[0]
+            return ENRICH_OK, results[0]
         if fallback is None:
             fallback = results[0]
 
@@ -182,25 +193,49 @@ def _lookup(title: str, author: str) -> dict | None:
                     results[i] = enrich_from(candidates[i], fut.result())
             for i in range(1, len(candidates)):
                 if results[i]["description"]:
-                    return results[i]
+                    return ENRICH_OK, results[i]
 
-    return fallback
+    if fallback is not None:
+        return ENRICH_OK, fallback
+    if not reachable:
+        # Every search attempt failed at the network/HTTP layer, so we can't
+        # tell "no match" from "service unreachable".
+        return ENRICH_UNAVAILABLE, None
+    return ENRICH_NO_MATCH, None
 
 
-def enrich_book(title: str, author: str) -> dict | None:
-    """Return enriched metadata (title, author, subjects, description), or None.
+def enrich_book(title: str, author: str) -> tuple[str, dict | None]:
+    """Return (status, data) for enriched metadata.
 
-    The lookup is cached in-memory keyed by (title, author).
+    status is one of ENRICH_OK, ENRICH_NO_MATCH, or ENRICH_UNAVAILABLE (see the
+    module docstring); data is the enriched dict when status is ENRICH_OK and
+    None otherwise.
+
+    Lookups are cached in-memory keyed by (title, author). "Unavailable"
+    results are remembered only briefly (see _ENRICH_UNAVAILABLE_TTL) so the
+    app retries once the service recovers, while "ok"/"no match" results are
+    stable and cached indefinitely.
     """
     key = f"{title}\x00{author}".lower()
+    now = time.monotonic()
     with _cache_lock:
-        if key in _cache:
-            return _cache[key]
+        hit = _cache.get(key)
+        if hit is not None:
+            status, data, expires = hit
+            if status != ENRICH_UNAVAILABLE or now < expires:
+                return status, data
+            # stale "unavailable" marker -> retry the lookup
+            del _cache[key]
 
-    result = _lookup(title, author)
+    status, result = _lookup(title, author)
 
     with _cache_lock:
         if len(_cache) >= _MAX_CACHE:
             _cache.pop(next(iter(_cache), None), None)  # crude FIFO eviction
-        _cache[key] = result
-    return result
+        expires = (
+            time.monotonic() + _ENRICH_UNAVAILABLE_TTL
+            if status == ENRICH_UNAVAILABLE
+            else math.inf
+        )
+        _cache[key] = (status, result, expires)
+    return status, result

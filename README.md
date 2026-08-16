@@ -143,6 +143,10 @@ Details:
   title differs from the canonical one, like *1984* vs *Nineteen Eighty-Four*),
   the drawer just shows the feed's own data and a "no additional info" note —
   the app keeps working regardless.
+- If OpenLibrary itself is unreachable (down or blocked), the drawer shows a
+  distinct "can't reach the enrichment service" warning instead, and BookPod
+  remembers that briefly (default 5 minutes) before retrying, so it recovers
+  automatically once the service is back.
 - Toggle it off globally in `config.toml`:
 
   ```toml

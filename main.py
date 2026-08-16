@@ -417,18 +417,27 @@ async def book_detail(request: Request, item_id: int, page: int = 1, rss_url: st
 async def enrich(request: Request, item_id: int, rss_url: str | None = None):
     if not ENRICHMENT_ENABLED:
         return templates.TemplateResponse(
-            request, "enrich.html", {"disabled": True, "enriched": None, "rss_url": ""}
+            request, "enrich.html",
+            {"disabled": True, "enriched": None, "status": "disabled", "rss_url": ""},
         )
     source = resolve_source(rss_url)
     if source is None:
-        return templates.TemplateResponse(request, "enrich.html", {"enriched": None, "rss_url": ""})
+        return templates.TemplateResponse(
+            request, "enrich.html",
+            {"enriched": None, "status": "", "rss_url": ""},
+        )
     lib = get_library(source)
     await run_in_threadpool(lib.load_sync)
     if item_id < 1 or item_id > len(lib.books):
         raise HTTPException(status_code=404, detail="Book not found")
     book = lib.books[item_id - 1]
-    enriched = await run_in_threadpool(enrich_book, book["title"], book["author"])
-    return templates.TemplateResponse(request, "enrich.html", {"enriched": enriched, "rss_url": source})
+    enrich_status, enriched = await run_in_threadpool(
+        enrich_book, book["title"], book["author"]
+    )
+    return templates.TemplateResponse(
+        request, "enrich.html",
+        {"enriched": enriched, "status": enrich_status, "rss_url": source},
+    )
 
 
 @app.post("/refresh", response_class=HTMLResponse)

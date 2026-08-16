@@ -1,5 +1,7 @@
 {% if disabled %}
 <p class="enrich-none">Expanded data lookups are disabled.</p>
+{% elif status == "unavailable" %}
+<p class="enrich-error">Couldn't reach the enrichment service (OpenLibrary) &mdash; it looks like it's down or blocked right now. Please try again later.</p>
 {% elif enriched %}
 <div class="enrich-info">
   <h3 class="enrich-heading">More about this book</h3>
