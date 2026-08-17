@@ -20,13 +20,18 @@ Results are cached in-memory so repeated drawer opens don't re-query the API.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import math
+import os
 import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
+
+from feed import default_cache_dir
 
 USER_AGENT = "BookPod/1.0 (audiobook RSS library)"
 SEARCH_URL = "https://openlibrary.org/search.json"
@@ -36,6 +41,7 @@ MAX_GENRES = 8
 MAX_WORKS = 4  # candidate works probed per title variant for a synopsis
 _MAX_CACHE = 200
 _ENRICH_UNAVAILABLE_TTL = 300  # seconds to remember OpenLibrary being unreachable
+_ENRICH_DIR_NAME = "enrich"  # subdir of the app cache dir for persisted results
 
 # Statuses returned alongside enriched data so the UI can distinguish a genuine
 # "no match" from "the enrichment service is down/unreachable".
@@ -204,17 +210,55 @@ def _lookup(title: str, author: str) -> tuple[str, dict | None]:
     return ENRICH_NO_MATCH, None
 
 
-def enrich_book(title: str, author: str) -> tuple[str, dict | None]:
+def _enrich_cache_dir(cache_dir: str | None) -> str:
+    """Directory for the on-disk enrichment cache."""
+    return os.path.join(cache_dir or default_cache_dir(), _ENRICH_DIR_NAME)
+
+
+def _disk_key_path(cache_dir: str | None, title: str, author: str) -> str:
+    key = hashlib.sha1(f"{title}\x00{author}".lower().encode("utf-8")).hexdigest()
+    return os.path.join(_enrich_cache_dir(cache_dir), key + ".json")
+
+
+def _save_disk(cache_dir: str | None, title: str, author: str, data: dict) -> None:
+    """Persist a successful enrichment so it survives restarts/outages."""
+    try:
+        path = _disk_key_path(cache_dir, title, author)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+    except OSError:  # noqa: BLE001 - persistence is best-effort
+        pass
+
+
+def _load_disk(cache_dir: str | None, title: str, author: str) -> dict | None:
+    """Return a previously persisted enrichment, or None."""
+    try:
+        with open(_disk_key_path(cache_dir, title, author), encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return None
+    if isinstance(data, dict) and "title" in data and "description" in data:
+        return data
+    return None
+
+
+def enrich_book(
+    title: str, author: str, cache_dir: str | None = None
+) -> tuple[str, dict | None]:
     """Return (status, data) for enriched metadata.
 
     status is one of ENRICH_OK, ENRICH_NO_MATCH, or ENRICH_UNAVAILABLE (see the
     module docstring); data is the enriched dict when status is ENRICH_OK and
     None otherwise.
 
-    Lookups are cached in-memory keyed by (title, author). "Unavailable"
-    results are remembered only briefly (see _ENRICH_UNAVAILABLE_TTL) so the
-    app retries once the service recovers, while "ok"/"no match" results are
-    stable and cached indefinitely.
+    Lookups are cached in-memory keyed by (title, author). Successful results
+    are also persisted to disk (under <cache_dir>/enrich), and when OpenLibrary
+    is unreachable (status ENRICH_UNAVAILABLE) any previously persisted result
+    is served instead — so books enriched while the service was up still show
+    their info during an outage. "Unavailable" results are remembered in
+    memory only briefly (see _ENRICH_UNAVAILABLE_TTL) so the app retries once
+    the service recovers.
     """
     key = f"{title}\x00{author}".lower()
     now = time.monotonic()
@@ -228,6 +272,13 @@ def enrich_book(title: str, author: str) -> tuple[str, dict | None]:
             del _cache[key]
 
     status, result = _lookup(title, author)
+
+    if status == ENRICH_OK and result is not None:
+        _save_disk(cache_dir, title, author, result)
+    elif status == ENRICH_UNAVAILABLE:
+        cached = _load_disk(cache_dir, title, author)
+        if cached is not None:
+            status, result = ENRICH_OK, cached
 
     with _cache_lock:
         if len(_cache) >= _MAX_CACHE:

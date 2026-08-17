@@ -432,7 +432,7 @@ async def enrich(request: Request, item_id: int, rss_url: str | None = None):
         raise HTTPException(status_code=404, detail="Book not found")
     book = lib.books[item_id - 1]
     enrich_status, enriched = await run_in_threadpool(
-        enrich_book, book["title"], book["author"]
+        enrich_book, book["title"], book["author"], CACHE_DIR
     )
     return templates.TemplateResponse(
         request, "enrich.html",

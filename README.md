@@ -24,6 +24,7 @@ no frontend build tools.
 main.py                 FastAPI application (routes, search, per-feed library)
 feed.py                 RSS parsing + SHA-1 disk caching
 enrich.py               OpenLibrary enrichment lookups (genres + synopsis)
+prewarm_enrich.py       One-off script to pre-fill the enrichment disk cache
 config.py               Loads config.toml (defaults + TOML merging)
 config.toml             Private configuration (git-ignored)
 config.toml.example     Committed template for config.toml
@@ -147,12 +148,30 @@ Details:
   distinct "can't reach the enrichment service" warning instead, and BookPod
   remembers that briefly (default 5 minutes) before retrying, so it recovers
   automatically once the service is back.
+- Successful enrichments are also persisted to disk (under the app cache dir's
+  `enrich/` subfolder). If OpenLibrary is ever unreachable again, a book that
+  was enriched before is served straight from that persisted copy instead of
+  showing the warning.
 - Toggle it off globally in `config.toml`:
 
   ```toml
   [enrichment]
   enabled = false
   ```
+
+Pre-warming the cache: because BookPod falls back to previously saved
+enrichments when OpenLibrary is unreachable, you can pre-fill the disk cache
+for the whole feed while the service is up:
+
+```bash
+.venv/bin/python prewarm_enrich.py
+```
+
+This loads the configured feed and looks up every book once, saving each
+successful result to the same cache the web app reads. It skips books that are
+already cached, so re-running is safe and resumable; pass `--timeout 5` to
+keep a run fast if OpenLibrary is having issues (those books just won't be
+cached, and you can re-run later).
 
 ## Deploying as a systemd service
 
